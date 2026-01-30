@@ -123,6 +123,7 @@ def all_gather(data, force_cpu=False, force_filesys=False, filesys_save_dir=None
     Returns:
         list[data]: list of data gathered from each rank
     """
+    from sam3.device_utils import is_cuda_available
 
     world_size = get_world_size()
     if world_size == 1:
@@ -143,7 +144,7 @@ def all_gather(data, force_cpu=False, force_filesys=False, filesys_save_dir=None
     buffer = io.BytesIO()
     torch.save(data, buffer)
     data_view = buffer.getbuffer()
-    device = "cuda" if cpu_group is None else "cpu"
+    device = "cuda" if cpu_group is None and is_cuda_available() else "cpu"
     tensor = torch.ByteTensor(data_view).to(device)
 
     # obtain Tensor size of each rank
@@ -193,13 +194,16 @@ def convert_to_distributed_tensor(tensor: torch.Tensor) -> Tuple[torch.Tensor, s
     tensor is on the GPU. This helper function converts to the correct
     device and returns the tensor + original device.
     """
+    from sam3.device_utils import is_cuda_available
+    
     orig_device = "cpu" if not tensor.is_cuda else "gpu"
     if (
         torch.distributed.is_available()
         and torch.distributed.get_backend() == torch.distributed.Backend.NCCL
         and not tensor.is_cuda
     ):
-        tensor = tensor.cuda()
+        if is_cuda_available():
+            tensor = tensor.cuda()
     return (tensor, orig_device)
 
 
@@ -370,9 +374,12 @@ def get_primary_rank() -> int:
 
 
 def set_cuda_device_index(idx: int) -> None:
+    from sam3.device_utils import is_cuda_available
+    
     global _cuda_device_index
     _cuda_device_index = idx
-    torch.cuda.set_device(_cuda_device_index)
+    if is_cuda_available():
+        torch.cuda.set_device(_cuda_device_index)
 
 
 def set_cpu_device() -> None:

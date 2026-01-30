@@ -65,9 +65,19 @@ def generic_nms(
         if GENERIC_NMS_AVAILABLE:
             return generic_nms_cuda(ious, scores, iou_threshold, use_iou_matrix=True)
         else:
-            from sam3.perflib.triton.nms import nms_triton
-
-            return nms_triton(ious, scores, iou_threshold)
+            try:
+                from sam3.perflib.triton.nms import nms_triton
+                return nms_triton(ious, scores, iou_threshold)
+            except ImportError as e:
+                logging.warning(
+                    f"Triton not available ({e}), falling back to CPU implementation. "
+                    "Install triton for better performance: pip install triton"
+                )
+                # Fall back to CPU
+                ious_cpu = ious.cpu()
+                scores_cpu = scores.cpu()
+                result = generic_nms_cpu(ious_cpu, scores_cpu, iou_threshold)
+                return result.to(ious.device)
 
     return generic_nms_cpu(ious, scores, iou_threshold)
 

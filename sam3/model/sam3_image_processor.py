@@ -1,6 +1,7 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates. All Rights Reserved
 
 # pyre-unsafe
+from dataclasses import fields
 from typing import Dict, List
 
 import numpy as np
@@ -11,12 +12,33 @@ from sam3.model.data_misc import FindStage, interpolate
 from torchvision.transforms import v2
 
 
+def _get_model_device(model):
+    """Get the device of the model (first parameter)."""
+    return next(model.parameters()).device
+
+
+def _move_find_stage_to_device(find_stage, device):
+    """Move FindStage tensor fields to the given device."""
+    for field in fields(find_stage):
+        if field.name.startswith("_"):
+            continue
+        val = getattr(find_stage, field.name)
+        if isinstance(val, torch.Tensor):
+            setattr(find_stage, field.name, val.to(device))
+        elif val is not None and isinstance(val, (list, tuple)) and len(val) > 0:
+            if isinstance(val[0], torch.Tensor):
+                setattr(find_stage, field.name, type(val)(x.to(device) for x in val))
+
+
 class Sam3Processor:
     """ """
 
-    def __init__(self, model, resolution=1008, device="cuda", confidence_threshold=0.5):
+    def __init__(self, model, resolution=1008, device=None, confidence_threshold=0.5):
         self.model = model
         self.resolution = resolution
+        # Use model's device if not specified (ensures image and model stay on same device)
+        if device is None:
+            device = _get_model_device(model)
         self.device = device
         self.transform = v2.Compose(
             [
@@ -51,7 +73,11 @@ class Sam3Processor:
         else:
             raise ValueError("Image must be a PIL image or a tensor")
 
-        image = v2.functional.to_image(image).to(self.device)
+        # Use model's current device so image and model are always on same device
+        device = _get_model_device(self.model)
+        self.device = device  # Keep in sync for find_stage and other uses
+        _move_find_stage_to_device(self.find_stage, device)
+        image = v2.functional.to_image(image).to(device)
         image = self.transform(image).unsqueeze(0)
 
         state["original_height"] = height
@@ -88,8 +114,12 @@ class Sam3Processor:
         state["original_heights"] = [image.height for image in images]
         state["original_widths"] = [image.width for image in images]
 
+        # Use model's current device so images and model are always on same device
+        device = _get_model_device(self.model)
+        self.device = device
+        _move_find_stage_to_device(self.find_stage, device)
         images = [
-            self.transform(v2.functional.to_image(image).to(self.device))
+            self.transform(v2.functional.to_image(image).to(device))
             for image in images
         ]
         images = torch.stack(images, dim=0)

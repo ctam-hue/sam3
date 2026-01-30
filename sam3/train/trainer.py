@@ -260,7 +260,13 @@ class Trainer:
 
     def _infer_distributed_backend_if_none(self, distributed_conf, accelerator):
         if distributed_conf.backend is None:
-            distributed_conf.backend = "nccl" if accelerator == "cuda" else "gloo"
+            if accelerator == "cuda":
+                distributed_conf.backend = "nccl"
+            elif accelerator == "mps":
+                # MPS doesn't support distributed training, use gloo if needed
+                distributed_conf.backend = "gloo"
+            else:
+                distributed_conf.backend = "gloo"
 
     def _setup_env_variables(self, env_variables_conf) -> None:
         if env_variables_conf is not None:
@@ -291,17 +297,25 @@ class Trainer:
         if accelerator == "cuda":
             self.device = torch.device("cuda", self.local_rank)
             torch.cuda.set_device(self.local_rank)
+        elif accelerator == "mps":
+            # MPS doesn't support distributed training or device indexing
+            self.device = torch.device("mps")
         elif accelerator == "cpu":
             self.device = torch.device("cpu")
         else:
-            raise ValueError(f"Unsupported accelerator: {accelerator}")
+            raise ValueError(f"Unsupported accelerator: {accelerator}. Supported: cuda, mps, cpu")
 
     def _setup_ddp_distributed_training(self, distributed_conf, accelerator):
         assert isinstance(self.model, torch.nn.Module)
 
+        device_ids = []
+        if accelerator == "cuda":
+            device_ids = [self.local_rank]
+        # MPS and CPU don't use device_ids
+        
         self.model = nn.parallel.DistributedDataParallel(
             self.model,
-            device_ids=[self.local_rank] if accelerator == "cuda" else [],
+            device_ids=device_ids,
             find_unused_parameters=distributed_conf.find_unused_parameters,
             gradient_as_bucket_view=distributed_conf.gradient_as_bucket_view,
             static_graph=distributed_conf.static_graph,
@@ -602,10 +616,11 @@ class Trainer:
             # loop anyway
             if self.is_intermediate_val_epoch(self.epoch):
                 self.run_val()
-                if torch.cuda.is_available() and self.empty_gpu_mem_cache_after_eval:
+                from sam3.device_utils import empty_cache
+                if empty_cache and self.empty_gpu_mem_cache_after_eval:
                     # release memory buffers held by the model during eval (which typically
                     # involves a lot more frames in video grounding that during training)
-                    torch.cuda.empty_cache()
+                    empty_cache(self.device)
 
             if self.distributed_rank == 0:
                 self.best_meter_values.update(self._get_trainer_state("train"))
@@ -678,14 +693,17 @@ class Trainer:
 
             # compute output
             with torch.no_grad():
+                # Determine device type for autocast
+                from sam3.device_utils import get_device_type
+                device_type = get_device_type(self.device)
+                # Only use autocast for CUDA and CPU (MPS doesn't support it yet)
+                autocast_enabled = (self.optim_conf.amp.enabled if self.optim_conf else False) and device_type in ("cuda", "cpu")
+                autocast_dtype = get_amp_type(self.optim_conf.amp.amp_dtype) if self.optim_conf else None
+                
                 with torch.amp.autocast(
-                    device_type="cuda",
-                    enabled=(self.optim_conf.amp.enabled if self.optim_conf else False),
-                    dtype=(
-                        get_amp_type(self.optim_conf.amp.amp_dtype)
-                        if self.optim_conf
-                        else None
-                    ),
+                    device_type=device_type if device_type in ("cuda", "cpu") else "cpu",
+                    enabled=autocast_enabled,
+                    dtype=autocast_dtype,
                 ):
                     for phase, model in zip(curr_phases, curr_models):
                         loss_dict, batch_size, extra_losses = self._step(
@@ -713,7 +731,9 @@ class Trainer:
                 time.time() - self.start_time + self.ckpt_time_elapsed
             )
 
-            if torch.cuda.is_available():
+            from sam3.device_utils import get_device_memory_info
+            mem_info = get_device_memory_info(self.device)
+            if mem_info:
                 mem.update(reset_peak_usage=True)
 
             if data_iter % self.logging_conf.log_freq == 0:
@@ -934,9 +954,15 @@ class Trainer:
                 else contextlib.nullcontext()
             )
             with ddp_context:
+                # Determine device type for autocast
+                from sam3.device_utils import get_device_type
+                device_type = get_device_type(self.device)
+                # Only use autocast for CUDA and CPU (MPS doesn't support it yet)
+                autocast_enabled = self.optim_conf.amp.enabled and device_type in ("cuda", "cpu")
+                
                 with torch.amp.autocast(
-                    device_type="cuda",
-                    enabled=self.optim_conf.amp.enabled,
+                    device_type=device_type if device_type in ("cuda", "cpu") else "cpu",
+                    enabled=autocast_enabled,
                     dtype=get_amp_type(self.optim_conf.amp.amp_dtype),
                 ):
                     loss_dict, batch_size, extra_losses = self._step(

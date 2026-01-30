@@ -45,8 +45,15 @@ def concat_padded_sequences(seq1, mask1, seq2, mask2, return_index: bool = False
     assert seq1_length == mask1.size(1)
     assert seq2_length == mask2.size(1)
 
-    torch._assert_async(is_right_padded(mask1))
-    torch._assert_async(is_right_padded(mask2))
+    # _assert_async is not supported on MPS (falls back to CPU with warning); use plain assert
+    right_padded1 = is_right_padded(mask1)
+    right_padded2 = is_right_padded(mask2)
+    if mask1.is_cuda:
+        torch._assert_async(right_padded1)
+        torch._assert_async(right_padded2)
+    else:
+        assert right_padded1.item(), "mask1 should be right-padded"
+        assert right_padded2.item(), "mask2 should be right-padded"
 
     actual_seq1_lengths = (~mask1).sum(dim=-1)
     actual_seq2_lengths = (~mask2).sum(dim=-1)
@@ -589,6 +596,16 @@ class SequenceGeometryEncoder(nn.Module):
     def _encode_points(self, points, points_mask, points_labels, img_feats):
         points_embed = None
         n_points, bs = points.shape[:2]
+        device = img_feats.device
+        dtype = img_feats.dtype
+
+        # Early return for empty points (e.g. text-only prompt). Avoids MPS bug in
+        # grid_sample with empty grid and ensures correct empty tensor shapes.
+        if n_points == 0:
+            empty_embed = torch.zeros(
+                0, bs, self.d_model, device=device, dtype=dtype
+            )
+            return empty_embed, points_mask
 
         if self.points_direct_project is not None:
             proj = self.points_direct_project(points)
@@ -645,7 +662,12 @@ class SequenceGeometryEncoder(nn.Module):
             # We need to denormalize, and convert to [x, y, x, y]
             boxes_xyxy = box_cxcywh_to_xyxy(boxes)
             scale = torch.tensor([W, H, W, H], dtype=boxes_xyxy.dtype)
-            scale = scale.pin_memory().to(device=boxes_xyxy.device, non_blocking=True)
+            target_device = boxes_xyxy.device
+            # pin_memory() is only valid for CUDA; use plain .to() for MPS/CPU
+            if target_device.type == "cuda":
+                scale = scale.pin_memory().to(device=target_device, non_blocking=True)
+            else:
+                scale = scale.to(device=target_device)
             scale = scale.view(1, 1, 4)
             boxes_xyxy = boxes_xyxy * scale
             sampled = torchvision.ops.roi_align(

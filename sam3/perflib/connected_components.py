@@ -76,11 +76,20 @@ def connected_components(input_tensor: torch.Tensor):
             return get_connected_components(input_tensor.to(torch.uint8))
         else:
             # triton fallback
-            from sam3.perflib.triton.connected_components import (
-                connected_components_triton,
-            )
-
-            return connected_components_triton(input_tensor)
+            try:
+                from sam3.perflib.triton.connected_components import (
+                    connected_components_triton,
+                )
+                return connected_components_triton(input_tensor)
+            except ImportError as e:
+                logging.warning(
+                    f"Triton not available ({e}), falling back to CPU implementation. "
+                    "Install triton for better GPU performance: pip install triton"
+                )
+                # Fall back to CPU
+                input_cpu = input_tensor.cpu()
+                labels, counts = connected_components_cpu(input_cpu)
+                return labels.to(input_tensor.device), counts.to(input_tensor.device)
 
     # CPU fallback
     return connected_components_cpu(input_tensor)

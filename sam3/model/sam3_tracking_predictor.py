@@ -47,9 +47,15 @@ class Sam3TrackerPredictor(Sam3TrackerBase):
         self.max_point_num_in_prompt_enc = max_point_num_in_prompt_enc
         self.non_overlap_masks_for_output = non_overlap_masks_for_output
 
-        self.bf16_context = torch.autocast(device_type="cuda", dtype=torch.bfloat16)
-        self.bf16_context.__enter__()  # keep using for the entire model process
-
+        self.bf16_context = None
+        # Only use autocast on CUDA when it's actually available (avoids "cuda not available" warning)
+        from sam3.device_utils import get_autocast_device_type, get_device_type
+        if hasattr(self, "device"):
+            device_type = get_autocast_device_type(self.device)
+            if device_type == "cuda":
+                self.bf16_context = torch.autocast(device_type="cuda", dtype=torch.bfloat16)
+                self.bf16_context.__enter__()  # keep using for the entire model process
+        
         self.iter_use_prev_mask_pred = True
         self.add_all_frames_to_correct_as_cond = True
 
@@ -66,6 +72,8 @@ class Sam3TrackerPredictor(Sam3TrackerBase):
         async_loading_frames=False,
     ):
         """Initialize a inference state."""
+        from sam3.device_utils import get_device_type
+        
         inference_state = {}
         # whether to offload the video frames to CPU memory
         # turning on this option saves the GPU memory with only a very small overhead
@@ -79,7 +87,8 @@ class Sam3TrackerPredictor(Sam3TrackerBase):
         if offload_state_to_cpu:
             inference_state["storage_device"] = torch.device("cpu")
         else:
-            inference_state["storage_device"] = torch.device("cuda")
+            device_type = get_device_type(self.device)
+            inference_state["storage_device"] = self.device
 
         if video_path is not None:
             images, video_height, video_width = load_video_frames(

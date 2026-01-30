@@ -35,11 +35,17 @@ class Sam3VideoPredictor:
         async_loading_frames=False,
         video_loader_type="cv2",
         apply_temporal_disambiguation: bool = True,
+        device=None,
     ):
         self.async_loading_frames = async_loading_frames
         self.video_loader_type = video_loader_type
         from sam3.model_builder import build_sam3_video_model
+        from sam3.device_utils import get_default_device, to_device
 
+        if device is None:
+            device = get_default_device()
+        
+        self.device = device
         self.model = (
             build_sam3_video_model(
                 checkpoint_path=checkpoint_path,
@@ -48,8 +54,8 @@ class Sam3VideoPredictor:
                 geo_encoder_use_img_cross_attn=geo_encoder_use_img_cross_attn,
                 strict_state_dict_loading=strict_state_dict_loading,
                 apply_temporal_disambiguation=apply_temporal_disambiguation,
+                device=device,
             )
-            .cuda()
             .eval()
         )
 

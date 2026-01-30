@@ -107,7 +107,8 @@ def set_seeds(seed_value, max_epochs, dist_rank):
     random.seed(seed_value)
     np.random.seed(seed_value)
     torch.manual_seed(seed_value)
-    if torch.cuda.is_available():
+    from sam3.device_utils import is_cuda_available
+    if is_cuda_available():
         torch.cuda.manual_seed_all(seed_value)
 
 
@@ -198,13 +199,24 @@ class MemMeter:
         self._allow_updates = True
 
     def update(self, n=1, reset_peak_usage=True):
-        self.val = torch.cuda.max_memory_allocated() // 1e9
-        self.sum += self.val * n
-        self.count += n
-        self.avg = self.sum / self.count
-        self.peak = max(self.peak, self.val)
-        if reset_peak_usage:
-            torch.cuda.reset_peak_memory_stats()
+        from sam3.device_utils import get_device_memory_info, is_cuda_available
+        
+        # Only update if CUDA is available
+        if is_cuda_available():
+            self.val = torch.cuda.max_memory_allocated() // 1e9
+            self.sum += self.val * n
+            self.count += n
+            self.avg = self.sum / self.count
+            self.peak = max(self.peak, self.val)
+            if reset_peak_usage:
+                torch.cuda.reset_peak_memory_stats()
+        else:
+            # For non-CUDA devices, set to 0 or use alternative memory tracking if available
+            self.val = 0
+            self.sum += self.val * n
+            self.count += n
+            self.avg = self.sum / self.count
+            self.peak = max(self.peak, self.val)
 
     def __str__(self):
         fmtstr = (

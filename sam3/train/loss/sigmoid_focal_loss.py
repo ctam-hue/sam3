@@ -5,9 +5,19 @@
 """Triton kernel for faster and memory efficient sigmoid focal loss"""
 
 import torch
-import triton
-import triton.language as tl
-from torch._inductor.runtime.triton_helpers import libdevice
+
+# Try to import triton - it's optional for GPU acceleration
+try:
+    import triton
+    import triton.language as tl
+    from torch._inductor.runtime.triton_helpers import libdevice
+    TRITON_AVAILABLE = True
+except ImportError:
+    TRITON_AVAILABLE = False
+    # Create dummy objects to avoid import errors
+    triton = None
+    tl = None
+    libdevice = None
 
 """
 
@@ -33,12 +43,13 @@ In practice, this is not good, since it creates a massive bottleneck on the sema
 M = 32 works fine in benchmarking tests. The forward is a tiny bit slower compared to the non-reduced kernel, but the backward breaks even due to one less memory allocation.
 """
 
-
-@triton.jit
-def _inner_focal_loss_fwd(inputs, targets, alpha, gamma):
-    inv_targets = 1 - targets
-    # Sigmoid
-    sig = tl.sigmoid(inputs)
+# Only define triton kernels if triton is available
+if TRITON_AVAILABLE:
+    @triton.jit
+    def _inner_focal_loss_fwd(inputs, targets, alpha, gamma):
+        inv_targets = 1 - targets
+        # Sigmoid
+        sig = tl.sigmoid(inputs)
 
     # Binary cross entropy with logits
     # In practice, we want the following:
@@ -320,4 +331,27 @@ class SigmoidFocalLossReduced(torch.autograd.Function):
         return grad_inputs.view(input_shape), None, None, None
 
 
-triton_sigmoid_focal_loss_reduce = SigmoidFocalLossReduced.apply
+    triton_sigmoid_focal_loss_reduce = SigmoidFocalLossReduced.apply
+
+else:
+    # Fallback implementations when triton is not available
+    # Use standard PyTorch implementation
+    def _pytorch_sigmoid_focal_loss(inputs, targets, alpha=0.25, gamma=2):
+        """Pure PyTorch implementation of sigmoid focal loss"""
+        prob = inputs.sigmoid()
+        ce_loss = torch.nn.functional.binary_cross_entropy_with_logits(
+            inputs, targets, reduction="none"
+        )
+        p_t = prob * targets + (1 - prob) * (1 - targets)
+        alpha_t = alpha * targets + (1 - alpha) * (1 - targets)
+        loss = alpha_t * ce_loss * ((1 - p_t) ** gamma)
+        return loss
+    
+    def triton_sigmoid_focal_loss(inputs, targets, alpha=0.25, gamma=2):
+        """Fallback to PyTorch when triton is not available"""
+        return _pytorch_sigmoid_focal_loss(inputs, targets, alpha, gamma)
+    
+    def triton_sigmoid_focal_loss_reduce(inputs, targets, alpha=0.25, gamma=2):
+        """Fallback to PyTorch with reduction when triton is not available"""
+        return _pytorch_sigmoid_focal_loss(inputs, targets, alpha, gamma).sum()
+
