@@ -1,11 +1,12 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates. All Rights Reserved
 
+# pyre-unsafe
+
 import numpy as np
 import torch
 import torch.nn.functional as F
 from numpy.typing import NDArray
-
-
+from sam3.model.edt import edt_triton
 
 
 def sample_box_points(

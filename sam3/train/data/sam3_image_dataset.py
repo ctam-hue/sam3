@@ -1,5 +1,7 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates. All Rights Reserved
 
+# pyre-unsafe
+
 """Dataset class for modulated detection"""
 
 import json
@@ -16,10 +18,8 @@ import torch
 import torch.utils.data
 import torchvision
 from iopath.common.file_io import g_pathmgr
-
 from PIL import Image as PILImage
 from PIL.Image import DecompressionBombError
-
 from sam3.model.box_ops import box_xywh_to_xyxy
 from torchvision.datasets.vision import VisionDataset
 
@@ -233,9 +233,9 @@ class CustomCocoDetectionAPI(VisionDataset):
         if self.coco is not None:
             return
 
-        assert g_pathmgr.isfile(
-            self.annFile
-        ), f"please provide valid annotation file. Missing: {self.annFile}"
+        assert g_pathmgr.isfile(self.annFile), (
+            f"please provide valid annotation file. Missing: {self.annFile}"
+        )
         annFile = g_pathmgr.get_local_path(self.annFile)
 
         if self.coco is not None:
@@ -325,11 +325,11 @@ class CustomCocoDetectionAPI(VisionDataset):
         else:
             num_queries_per_stage = stage2num_queries.most_common(1)[0][1]
         for stage, num_queries in stage2num_queries.items():
-            assert (
-                num_queries == num_queries_per_stage
-            ), f"Number of queries in stage {stage} is {num_queries}, expected {num_queries_per_stage}"
+            assert num_queries == num_queries_per_stage, (
+                f"Number of queries in stage {stage} is {num_queries}, expected {num_queries_per_stage}"
+            )
 
-        for query_id, query in enumerate(queries):
+        for query in queries:
             h, w = id2imsize[query["image_id"]]
             if (
                 "input_box" in query
